@@ -1,0 +1,241 @@
+#!/bin/bash
+
+# source the ciop functions (e.g. ciop-log, ciop-getparam)
+source ${ciop_job_include}
+
+set -x 
+
+# define the exit codes
+SUCCESS=0
+ERR_NO_RESOLUTION=5
+ERR_DOWNLOAD_1C=10
+ERR_GRANULE_DIR=15
+ERR_SEN2COR=20
+ERR_LEVEL_2A_DIR=25
+ERR_COMPRESSION=30
+ERR_PUBLISH=35
+
+# add a trap to exit gracefully
+function cleanExit ()
+{
+  local retval=$?
+  local msg=""
+  case "${retval}" in
+    ${SUCCESS}) msg="Processing successfully concluded";;
+    ${ERR_NO_RESOLUTION}) msg="No target resolution provided, must be one of 10, 20 or 60";;
+    ${ERR_DOWNLOAD_1C}) msg="Failed to retrieve Sentinel-2 Level 1C product";;
+    ${ERR_GRANULE_DIR}) msg="Couldn't find the Sentinel-2 Level 1C product granule directory";;
+    ${ERR_SEN2COR}) msg="SEN2COR main binary L2A_Process failed";;
+    ${ERR_LEVEL_2A_DIR}) msg="Couldn't find the Sentinel-2 Level 2A product";;
+    ${ERR_COMPRESSION}) msg="Failed to compress the Sentinel-2 Level 2A product";;
+    ${ERR_PUBLISH}) msg="Failed to publish the Sentinel-2 Level 2A product";;
+    *) msg="Unknown error";;
+  esac
+
+  [ "${retval}" != "0" ] && ciop-log "ERROR" "Error ${retval} - ${msg}, processing aborted" || ciop-log "INFO" "${msg}"
+  exit ${retval}
+}
+
+trap cleanExit EXIT
+
+function setOTBenv() {
+    
+  . /etc/profile.d/otb.sh
+
+  export otb_ram=2048
+ # export GDAL_DATA=/usr/share/gdal/
+}
+
+function setGDALEnv() {
+
+  export GDAL_HOME=/usr/local/gdal-t2/
+  export PATH=$GDAL_HOME/bin/:$PATH
+  export LD_LIBRARY_PATH=$GDAL_HOME/lib/:$LD_LIBRARY_PATH
+  export GDAL_DATA=$GDAL_HOME/share/gdal
+
+}
+
+function getGain() {
+
+  local band=$1
+
+  gain=$( cat $DIR/*_MTL.txt | grep REFLECTANCE_MULT_BAND_${band} | cut -d "=" -f 2 | tr -d " " )
+
+  echo ${gain}
+
+}
+
+function getOffset() {
+
+  local band=$1
+
+  offset=$( cat $DIR/*_MTL.txt | grep REFLECTANCE_ADD_BAND_${band} | cut -d "=" -f 2 | tr -d " " )
+
+  echo ${offset}
+
+}
+
+function DNtoReflectance() {
+
+  local band=$1
+  local base_name=$2
+
+  gain=$( getGain ${band} )
+  offset=$( getOffset ${band} )
+
+  [ ${band} -eq 4 ] && pan_band=1
+  [ ${band} -eq 3 ] && pan_band=2
+  [ ${band} -eq 2 ] && pan_band=3
+
+  otbcli_BandMath \
+    -progress false \
+    -il ${base_name}/pan-${base_name}.tif \
+    -exp "${gain} * im1b${pan_band} + ${offset}" \
+    -out ${base_name}/PAN_TOA_REFLECTANCE_B${band}.TIF
+
+}
+
+function mapBands() {
+
+  local vrt=$1
+
+  xmlstarlet ed -L -a "/VRTDataset/VRTRasterBand[@band="1"]/NoDataValue" \
+    -t elem -n "ColorInterp" -v "Red" \
+    ${vrt}
+
+  xmlstarlet ed -L -a "/VRTDataset/VRTRasterBand[@band="2"]/NoDataValue" \
+    -t elem -n "ColorInterp" -v "Green" \
+    ${vrt}
+
+  xmlstarlet ed -L -a "/VRTDataset/VRTRasterBand[@band="3"]/NoDataValue" \
+    -t elem -n "ColorInterp" -v "Blue" \
+    ${vrt}
+}
+
+# DN to TOA reflectance
+#gain_red=$( getGain 4 )
+#gain_green=$( getGain 3 )
+#gain_blue=$( getGain 2 )
+
+#offset_red=$( getOffset 4 )
+#offset_green=$( getOffset 3 )
+#offset_blue=$( getOffset 2 )
+
+function main() {
+
+  # set the gdal addo levels
+  addo="2 4 8 16 32 64 128 256 512 1024 2048 4096 8192"
+
+  # set OTB environment
+  setOTBenv
+
+  setGDALEnv
+
+  cd ${TMPDIR}
+
+  while read input
+  do 
+    ciop-log "INFO" "Retrieve Landsat 8 product from ${input}"
+
+    # temporary path until eo-samples indes is ready
+    # read identifier online_resource < <( opensearch-client ${input} identifier,enclosure | tr "," " " )
+    online_resource="s3://eo-samples/LC81950282016069LGN00.tar.gz"
+    identifier="LC81950282016069LGN00"
+
+    local_resource="$( echo ${online_resource} | ciop-copy -z -O ${TMPDIR} - )"
+
+   
+    ciop-log "INFO" "Extract Landsat 8 product"
+    
+    mkdir ${identifier}
+    tar xfz ${local_resource} -C ${identifier}
+  
+
+    ciop-log "INFO" "Pan-sharpen ${identifier}"
+
+    export DIR=${identifier}
+
+    gdalbuildvrt \
+      -separate \
+      -q \
+      -srcnodata "0 0 0"\
+      -vrtnodata "0 0 0"\
+      ${DIR}/rgb.vrt \
+      ${DIR}/*B4.TIF ${DIR}/*B3.TIF ${DIR}/*B2.TIF || return ${ERR_GDAL_VRT}
+
+    mapBands ${DIR}/rgb.vrt || return ${ERR_MAP_BANDS}
+
+    otbcli_BundleToPerfectSensor \
+      -progress false \
+      -ram ${otb_ram} \
+      -inp ${DIR}/*B8.TIF \
+      -inxs ${DIR}/rgb.vrt \
+      -out ${DIR}/pan-${DIR}.tif uint16 || return ${ERR_OTB_BUNDLETOPERFECTSENSOR}
+
+    rm -f ${DIR}/rgb.vrt
+
+    DNtoReflectance 4 ${DIR} || return ${ERR_DN2REF_4}
+    DNtoReflectance 3 ${DIR} || return ${ERR_DN2REF_3}
+    DNtoReflectance 2 ${DIR} || return ${ERR_DN2REF_2}
+
+    rm -f ${DIR}/pan-${DIR}.tif
+
+    gdalbuildvrt \
+      -separate \
+      -q \
+      -srcnodata "0 0 0"\
+      -vrtnodata "0 0 0"\
+      ${DIR}/pan_rgb.vrt \
+      ${DIR}/PAN*B4.TIF ${DIR}/PAN*B3.TIF ${DIR}/PAN*B2.TIF || return ${ERR_GDAL_VRT2}
+
+    gdal_translate \
+      -ot Byte \
+      -scale 0 1 0 255 \
+      -a_nodata "0 0 0" \
+      ${DIR}/pan_rgb.vrt ${DIR}/pan-${DIR}-scaled.tif || return ${ERR_GDAL_TRANSLATE}
+
+    rm -f ${DIR}/PAN*B?.TIF
+
+    rm -f ${DIR}/pan_rgb.vrt
+
+    gdalwarp \
+      -r cubic \
+      -wm ${otb_ram} \
+      -multi \
+      -srcnodata "0 0 0" \
+      -dstnodata "0 0 0" \
+      -dstalpha \
+      -wo OPTIMIZE_SIZE=TRUE \
+      -wo UNIFIED_SRC_NODATA=YES \
+      -t_srs EPSG:4326 \
+      -co tfw=yes \
+      -co TILED=YES\
+      -co COMPRESS=LZW\
+      ${DIR}/pan-${DIR}-scaled.tif ${DIR}/pansharp_${DIR}_4326.tif || return ${ERR_GDAL_WARP}
+
+    rm -f ${DIR}/pan-${DIR}-scaled.tif
+
+    convert -sigmoidal-contrast 50x16% ${DIR}/pansharp_${DIR}_4326.tif ${DIR}/pansharp_${DIR}_4326_bright.tif || return ${ERR_CONVERT}
+
+    rm -f ${DIR}/pansharp_${DIR}_4326.tif
+
+    mv ${DIR}/pansharp_${DIR}_4326.tfw ${DIR}/pansharp_${DIR}_4326_bright.tfw
+
+    gdal_translate ${DIR}/pansharp_${DIR}_4326_bright.tif ${DIR}/pansharp_${DIR}_4326_geo.tif || return ${ERR_GDAL_TRANSLATE2}
+
+    rm -f ${DIR}/pansharp_${DIR}_4326_bright.tif
+
+    gdaladdo \
+      -r cubic \
+      --config COMPRESS_OVERVIEW LZW \
+      ${DIR}/pansharp_${DIR}_4326_geo.tif ${addo}  || return ${ERR_GDAL_ADDO}
+
+    rm -f ${DIR}/pansharp_${DIR}_4326_bright.tfw
+tree
+    ciop-log "INFO" "Publish pan-sharpened RGB image"
+    ciop-publish -m ${TMPDIR}/${DIR}/pansharp_${DIR}_4326_geo.tif
+  done
+
+}
+
+cat | main || exit $?
