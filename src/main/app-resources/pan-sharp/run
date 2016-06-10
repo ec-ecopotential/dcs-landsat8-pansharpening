@@ -43,7 +43,16 @@ function setOTBenv() {
   . /etc/profile.d/otb.sh
 
   export otb_ram=2048
-  export GDAL_DATA=/usr/share/gdal/
+ # export GDAL_DATA=/usr/share/gdal/
+}
+
+function setGDALEnv() {
+
+  export GDAL_HOME=/usr/local/gdal-t2/
+  export PATH=$GDAL_HOME/bin/:$PATH
+  export LD_LIBRARY_PATH=$GDAL_HOME/lib/:$LD_LIBRARY_PATH
+  export GDAL_DATA=$GDAL_HOME/share/gdal
+
 }
 
 function getGain() {
@@ -119,6 +128,8 @@ function main() {
 
   # set OTB environment
   setOTBenv
+
+  setGDALEnv
 
   cd ${TMPDIR}
 
