@@ -121,6 +121,21 @@ function mapBands() {
 #offset_green=$( getOffset 3 )
 #offset_blue=$( getOffset 2 )
 
+function url_resolver() {
+
+  local url=""
+  local reference="$1"
+  
+  read identifier path < <( opensearch-client -m EOP  "${reference}" identifier,wrsLongitudeGrid | tr "," " " )
+  row="$( echo ${identifier} | cut -c 7-9)"
+
+  url="http://storage.googleapis.com/earthengine-public/landsat/L8/${path}/${row}/${identifier}.tar.bz"
+
+  echo "${url}"
+
+}
+
+
 function main() {
 
   # set the gdal addo levels
@@ -138,19 +153,16 @@ function main() {
     ciop-log "INFO" "Retrieve Landsat 8 product from ${input}"
 
     # temporary path until eo-samples indes is ready
-    # read identifier online_resource < <( opensearch-client ${input} identifier,enclosure | tr "," " " )
-    online_resource="s3://eo-samples/LC81950282016069LGN00.tar.gz"
-    identifier="LC81950282016069LGN00"
+    read identifier < <( opensearch-client ${input} identifier )
+    online_resource="$( url_resolver ${input} )"
 
-    local_resource="$( echo ${online_resource} | ciop-copy -z -O ${TMPDIR} - )"
-
+    local_resource="$( echo ${online_resource} | ciop-copy -U -O ${TMPDIR} - )"
    
     ciop-log "INFO" "Extract Landsat 8 product"
     
     mkdir ${identifier}
-    tar xfz ${local_resource} -C ${identifier}
+    tar jxvf ${local_resource} -C ${identifier}
   
-
     ciop-log "INFO" "Pan-sharpen ${identifier}"
 
     export DIR=${identifier}
