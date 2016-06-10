@@ -36,7 +36,7 @@ Used in Cluster mode (a set of master and slave nodes), it supports the deployme
 
 **Installing OTB and other dependencies**
 
-This services requires OTB, ImageMagick and 
+This services requires OTB, ImageMagick and XML Starlet
 
 To install these packages, run the simple steps below on the Developer Cloud Sandbox shell:
 
