@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<EarthObservation>
+<phenomenonTime>
+    <TimePeriod>
+      <beginPosition/>
+      <endPosition/>
+    </TimePeriod>
+  </phenomenonTime>  
+  <metaDataProperty>
+    <EarthObservationMetaData>
+      <productType/>
+<processing>
+        <ProcessingInformation>
+          <processingCenter/>
+          <processorName/>
+          <processorVersion/>
+          <nativeProductFormat/>
+        </ProcessingInformation>
+      </processing>
+  </EarthObservationMetaData>
+  </metaDataProperty>
+</EarthObservation>

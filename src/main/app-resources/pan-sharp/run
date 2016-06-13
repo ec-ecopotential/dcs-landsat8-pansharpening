@@ -3,15 +3,9 @@
 # source the ciop functions (e.g. ciop-log, ciop-getparam)
 source ${ciop_job_include}
 
-set -x 
-
 # define the exit codes
 SUCCESS=0
-ERR_NO_RESOLUTION=5
-ERR_DOWNLOAD_1C=10
-ERR_GRANULE_DIR=15
-ERR_SEN2COR=20
-ERR_LEVEL_2A_DIR=25
+ERR_NO_URL=5
 ERR_COMPRESSION=30
 ERR_PUBLISH=35
 
@@ -22,7 +16,7 @@ function cleanExit ()
   local msg=""
   case "${retval}" in
     ${SUCCESS}) msg="Processing successfully concluded";;
-    ${ERR_NO_RESOLUTION}) msg="No target resolution provided, must be one of 10, 20 or 60";;
+    ${ERR_NO_URL}) msg="The Landsat 8 product online resource could not be resolved";;
     ${ERR_DOWNLOAD_1C}) msg="Failed to retrieve Sentinel-2 Level 1C product";;
     ${ERR_GRANULE_DIR}) msg="Couldn't find the Sentinel-2 Level 1C product granule directory";;
     ${ERR_SEN2COR}) msg="SEN2COR main binary L2A_Process failed";;
@@ -42,7 +36,7 @@ function setOTBenv() {
     
   . /etc/profile.d/otb.sh
 
-  export otb_ram=2048
+  export otb_ram=4096
  # export GDAL_DATA=/usr/share/gdal/
 }
 
@@ -127,9 +121,12 @@ function url_resolver() {
   local reference="$1"
   
   read identifier path < <( opensearch-client -m EOP  "${reference}" identifier,wrsLongitudeGrid | tr "," " " )
+  [ -z "${path}" ] && path="$( echo ${identifier} | cut -c 4-6)"
   row="$( echo ${identifier} | cut -c 7-9)"
 
   url="http://storage.googleapis.com/earthengine-public/landsat/L8/${path}/${row}/${identifier}.tar.bz"
+
+  [ -z "$( curl -s --head "${url}" | head -n 1 | grep "HTTP/1.[01] [23].." )" ] && return 1
 
   echo "${url}"
 
@@ -148,25 +145,27 @@ function main() {
 
   cd ${TMPDIR}
 
+  num_steps=14
+
   while read input
   do 
-    ciop-log "INFO" "Retrieve Landsat 8 product from ${input}"
+    ciop-log "INFO" "(1 of ${num_steps}) Retrieve Landsat 8 product from ${input}"
 
     # temporary path until eo-samples indes is ready
-    read identifier < <( opensearch-client ${input} identifier )
-    online_resource="$( url_resolver ${input} )"
+    read identifier startdate enddate < <( opensearch-client ${input} identifier,startdate,enddate | tr "," " " )
+    online_resource="$( url_resolver ${input} || return $?)"
+    [ $? != 0 ] && return ${ERR_NO_URL} 
 
     local_resource="$( echo ${online_resource} | ciop-copy -U -O ${TMPDIR} - )"
    
-    ciop-log "INFO" "Extract Landsat 8 product"
+    ciop-log "INFO" "(2 of ${num_steps}) Extract ${identifier}"
     
     mkdir ${identifier}
-    tar jxvf ${local_resource} -C ${identifier}
-  
-    ciop-log "INFO" "Pan-sharpen ${identifier}"
+    tar jxf ${local_resource} -C ${identifier}
 
     export DIR=${identifier}
 
+    ciop-log "INFO" "(3 of ${num_steps}) Create VRT with RGB bands" 
     gdalbuildvrt \
       -separate \
       -q \
@@ -177,6 +176,8 @@ function main() {
 
     mapBands ${DIR}/rgb.vrt || return ${ERR_MAP_BANDS}
 
+    ciop-log "INFO" "(4 of ${num_steps}) OTB BundleToPerfectSensor"
+    
     otbcli_BundleToPerfectSensor \
       -progress false \
       -ram ${otb_ram} \
@@ -186,11 +187,15 @@ function main() {
 
     rm -f ${DIR}/rgb.vrt
 
+    ciop-log "INFO" "(5 of ${num_steps}) Conversion of DN to reflectance"
+
     DNtoReflectance 4 ${DIR} || return ${ERR_DN2REF_4}
     DNtoReflectance 3 ${DIR} || return ${ERR_DN2REF_3}
     DNtoReflectance 2 ${DIR} || return ${ERR_DN2REF_2}
 
     rm -f ${DIR}/pan-${DIR}.tif
+
+    ciop-log "INFO" "(6 of ${num_steps}) Create VRT with RGB pansharpened bands"
 
     gdalbuildvrt \
       -separate \
@@ -200,7 +205,10 @@ function main() {
       ${DIR}/pan_rgb.vrt \
       ${DIR}/PAN*B4.TIF ${DIR}/PAN*B3.TIF ${DIR}/PAN*B2.TIF || return ${ERR_GDAL_VRT2}
 
+    ciop-log "INFO" "(7 of ${num_steps}) Rescale to bitr"
+
     gdal_translate \
+      -q \
       -ot Byte \
       -scale 0 1 0 255 \
       -a_nodata "0 0 0" \
@@ -210,7 +218,10 @@ function main() {
 
     rm -f ${DIR}/pan_rgb.vrt
 
+    ciop-log "INFO" "(8 of ${num_steps}) Warp RGB raster"
+
     gdalwarp \
+      -q \
       -r cubic \
       -wm ${otb_ram} \
       -multi \
@@ -227,25 +238,93 @@ function main() {
 
     rm -f ${DIR}/pan-${DIR}-scaled.tif
 
-    convert -sigmoidal-contrast 50x16% ${DIR}/pansharp_${DIR}_4326.tif ${DIR}/pansharp_${DIR}_4326_bright.tif || return ${ERR_CONVERT}
+    ciop-log "INFO" "(9 of ${num_steps}) Sigmoidal contrast"
+
+    convert \
+      -quiet \
+      -sigmoidal-contrast 50x16% \
+      ${DIR}/pansharp_${DIR}_4326.tif \
+      ${DIR}/pansharp_${DIR}_4326_bright.tif || return ${ERR_CONVERT}
 
     rm -f ${DIR}/pansharp_${DIR}_4326.tif
 
     mv ${DIR}/pansharp_${DIR}_4326.tfw ${DIR}/pansharp_${DIR}_4326_bright.tfw
 
-    gdal_translate ${DIR}/pansharp_${DIR}_4326_bright.tif ${DIR}/pansharp_${DIR}_4326_geo.tif || return ${ERR_GDAL_TRANSLATE2}
+    ciop-log "INFO" "(10 of ${num_steps}) Geocoding of contrast image"   
+    gdal_translate \
+      -q \
+      ${DIR}/pansharp_${DIR}_4326_bright.tif \
+      ${DIR}/${DIR}_PANSHARP.tif || return ${ERR_GDAL_TRANSLATE2}
 
     rm -f ${DIR}/pansharp_${DIR}_4326_bright.tif
 
+    ciop-log "INFO" "(11 of ${num_steps}) Create levels"
+   
     gdaladdo \
+      -q \
       -r cubic \
       --config COMPRESS_OVERVIEW LZW \
-      ${DIR}/pansharp_${DIR}_4326_geo.tif ${addo}  || return ${ERR_GDAL_ADDO}
+      ${DIR}/${DIR}_PANSHARP.tif ${addo}  || return ${ERR_GDAL_ADDO}
 
     rm -f ${DIR}/pansharp_${DIR}_4326_bright.tfw
-tree
-    ciop-log "INFO" "Publish pan-sharpened RGB image"
-    ciop-publish -m ${TMPDIR}/${DIR}/pansharp_${DIR}_4326_geo.tif
+
+    ciop-log "INFO" "(12 of ${num_steps}) Generate metadata"
+
+    target_xml=${TMPDIR}/${DIR}/${DIR}_PANSHARP.tif.xml
+    cp /application/pan-sharp/etc/eop-template.xml ${target_xml}
+
+    # set product type
+    xmlstarlet ed -L \
+      -u "//EarthObservation/metaDataProperty/EarthObservationMetaData/productType" \
+      -v "LC8_PANSHARP" \
+      ${target_xml}    
+
+    # set processor name
+    xmlstarlet ed -L \
+      -u "//EarthObservation/metaDataProperty/EarthObservationMetaData/processing/ProcessingInformation/processorName" \
+      -v "dcs-landsat8-pansharpening" \
+      ${target_xml}
+
+    xmlstarlet ed -L \
+      -u "//EarthObservation/metaDataProperty/EarthObservationMetaData/processing/ProcessingInformation/processorVersion" \
+      -v "1.0" \
+      ${target_xml}
+
+    # set processor name
+    xmlstarlet ed -L \
+      -u "//EarthObservation/metaDataProperty/EarthObservationMetaData/processing/ProcessingInformation/nativeProductFormat" \
+      -v "GEOTIFF" \
+      ${target_xml}
+
+    # set processor name
+    xmlstarlet ed -L \
+      -u "//EarthObservation/metaDataProperty/EarthObservationMetaData/processing/ProcessingInformation/processingCenter" \
+      -v "Terradue Cloud Platform" \
+      ${target_xml}
+  
+    # set startdate
+    xmlstarlet ed -L \
+      -u "//EarthObservation/phenomenonTime/TimePeriod/beginPosition" \
+      -v "${startdate}" \
+      ${target_xml}
+
+    # set stopdate
+    xmlstarlet ed -L \
+      -u "//EarthObservation/phenomenonTime/TimePeriod/endPosition" \
+      -v "${enddate}" \
+      ${target_xml}   
+  
+    # set stopdate
+    xmlstarlet ed -L \
+      -u "" \
+      -v "" \
+      ${target_xml}
+
+    ciop-log "INFO" "(13 of ${num_steps}) Publish pan-sharpened RGB image"
+    ciop-publish -m ${TMPDIR}/${DIR}/${DIR}_PANSHARP.tif
+    
+    ciop-log "INFO" "(14 of ${num_steps}) Publish eop metadata"
+    ciop-publish -m ${target_xml}
   done
 
 }
