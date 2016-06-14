@@ -7,6 +7,7 @@
  <parameter id="startdate" type="opensearch" target="time:start" scope="runtime" maxOccurs="1" title="Time of Interest start date/time" abstract="Time of Interest start date/time in ISO 8601 (e.g. 2016-04-21T06:50:41Z)">2016-02-06T10:24:29.000Z</parameter>
         <parameter id="enddate" type="opensearch" target="time:end" scope="runtime" maxOccurs="1" title="Time of Interest end date/time" abstract="Time of Interest end date/time in ISO 8601 (e.g. 2016-04-21T06:50:41Z)">2016-02-25T23:59:59.000Z</parameter>
         <parameter id="bbox" type="opensearch" target="geo:box" scope="runtime" maxOccurs="1" title="Area of Interest expressed as a bounding box" abstract="Area of Interest expressed as min longitude,min latitude,max longitude,max latitude (e.g. 14.75,37.41,15.21,37.74)" >-6.93347752161222,36.6491782080923,-6.02730716774107,37.4739865688302</parameter> 
+        <parameter id="direction" type="opensearch" target="eop:orbitDirection">DESCENDING</parameter>
 </defaultParameters>     
 <defaultJobconf>
         <property id="mapred.task.timeout">9900000000</property>
