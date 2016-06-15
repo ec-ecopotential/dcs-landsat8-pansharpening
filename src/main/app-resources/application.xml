@@ -14,7 +14,7 @@
       </defaultJobconf>
     </jobTemplate>
   </jobTemplates>
-    <workflow id="workflow" title="Landsat 8 pan-sharpening" abstract="This processing service uses Landsat 8 panchromatic band at 15 meter resolution to provide greater detail in the Landsat 8 red, green and blue bands (4-3-2). ">
+    <workflow id="dcs-landsat8-pansharpening" title="Landsat 8 pan-sharpening" abstract="This processing service uses Landsat 8 panchromatic band at 15 meter resolution to provide greater detail in the Landsat 8 red, green and blue bands (4-3-2). ">
     <workflowVersion>1.0</workflowVersion>
     <node id="pan-sharp">
       <job id="pan-sharp"/>
