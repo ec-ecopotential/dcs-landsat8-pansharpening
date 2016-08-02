@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -x 
+
 # define the exit codes
 SUCCESS=0
 ERR_NO_URL=5
@@ -124,13 +126,13 @@ function url_resolver() {
   local url=""
   local reference="$1"
   
-  read identifier path < <( opensearch-client -m EOP  "${reference}" identifier,wrsLongitudeGrid | tr "," " " )
-  [ -z "${path}" ] && path="$( echo ${identifier} | cut -c 4-6)"
-  row="$( echo ${identifier} | cut -c 7-9)"
+  #read identifier path < <( opensearch-client -m EOP  "${reference}" identifier,wrsLongitudeGrid | tr "," " " )
+  #[ -z "${path}" ] && path="$( echo ${identifier} | cut -c 4-6)"
+  #row="$( echo ${identifier} | cut -c 7-9)"
 
-  url="http://storage.googleapis.com/earthengine-public/landsat/L8/${path}/${row}/${identifier}.tar.bz"
-
-  [ -z "$( curl -s --head "${url}" | head -n 1 | grep "HTTP/1.[01] [23].." )" ] && return 1
+  #url="http://storage.googleapis.com/earthengine-public/landsat/L8/${path}/${row}/${identifier}.tar.bz"
+  url="$(opensearch-client -m EOP -p es=gateway "${reference}" enclosure )"
+  #[ -z "$( curl -s --head "${url}" | head -n 1 | grep "HTTP/1.[01] [23].." )" ] && return 1
 
   echo "${url}"
 
@@ -172,7 +174,8 @@ function main() {
     ciop-log "INFO" "(1 of ${num_steps}) Retrieve Landsat 8 product from ${input}"
 
     # temporary path until eo-samples indes is ready
-    read identifier startdate enddate < <( opensearch-client ${input} identifier,startdate,enddate | tr "," " " )
+    #read identifier startdate enddate < <( opensearch-client ${input} identifier,startdate,enddate | tr "," " " )
+    read identifier < <( opensearch-client ${input} identifier )
     online_resource="$( url_resolver ${input} )"
     [ -z "${online_resource}" ] && return ${ERR_NO_URL} 
 
@@ -233,63 +236,11 @@ function main() {
       -ot Byte \
       -scale 0 1 0 255 \
       -a_nodata "0 0 0" \
-      ${DIR}/pan_rgb.vrt ${DIR}/pan-${DIR}-scaled.tif || return ${ERR_GDAL_TRANSLATE}
+      ${DIR}/pan_rgb.vrt ${DIR}/${DIR}_PANSHARP.tif || return ${ERR_GDAL_TRANSLATE}
 
     rm -f ${DIR}/PAN*B?.TIF
 
     rm -f ${DIR}/pan_rgb.vrt
-
-    ciop-log "INFO" "(8 of ${num_steps}) Warp RGB raster"
-
-    gdalwarp \
-      -q \
-      -r cubic \
-      -wm ${otb_ram} \
-      -multi \
-      -srcnodata "0 0 0" \
-      -dstnodata "0 0 0" \
-      -dstalpha \
-      -wo OPTIMIZE_SIZE=TRUE \
-      -wo UNIFIED_SRC_NODATA=YES \
-      -t_srs EPSG:4326 \
-      -co tfw=yes \
-      -co TILED=YES\
-      -co COMPRESS=LZW\
-      ${DIR}/pan-${DIR}-scaled.tif ${DIR}/pansharp_${DIR}_4326.tif || return ${ERR_GDAL_WARP}
-
-    rm -f ${DIR}/pan-${DIR}-scaled.tif
-
-    ciop-log "INFO" "(9 of ${num_steps}) Sigmoidal contrast"
-
-    convert \
-      -quiet \
-      -sigmoidal-contrast 50x16% \
-      ${DIR}/pansharp_${DIR}_4326.tif \
-      ${DIR}/pansharp_${DIR}_4326_bright.tif || return ${ERR_CONVERT}
-
-    rm -f ${DIR}/pansharp_${DIR}_4326.tif
-
-    mv ${DIR}/pansharp_${DIR}_4326.tfw ${DIR}/pansharp_${DIR}_4326_bright.tfw
-
-    ciop-log "INFO" "(10 of ${num_steps}) Geocoding of contrast image"   
-    gdal_translate \
-      -q \
-      ${DIR}/pansharp_${DIR}_4326_bright.tif \
-      ${DIR}/${DIR}_PANSHARP.tif || return ${ERR_GDAL_TRANSLATE2}
-
-    rm -f ${DIR}/pansharp_${DIR}_4326_bright.tif
-
-    ciop-log "INFO" "(11 of ${num_steps}) Create levels"
-   
-    gdaladdo \
-      -q \
-      -r cubic \
-      --config COMPRESS_OVERVIEW LZW \
-      ${DIR}/${DIR}_PANSHARP.tif ${addo}  || return ${ERR_GDAL_ADDO}
-
-    rm -f ${DIR}/pansharp_${DIR}_4326_bright.tfw
-
-    ciop-log "INFO" "(12 of ${num_steps}) Generate metadata"
 
     target_xml=${TMPDIR}/${DIR}/${DIR}_PANSHARP.tif.xml
     cp /application/pan-sharp/etc/eop-template.xml ${target_xml}
