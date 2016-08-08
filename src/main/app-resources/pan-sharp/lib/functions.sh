@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -x 
-
 # define the exit codes
 SUCCESS=0
 ERR_NO_URL=5
@@ -64,46 +62,6 @@ function setGDALEnv() {
 
 }
 
-function getGain() {
-
-  local band=$1
-
-  gain=$( cat $DIR/*_MTL.txt | grep REFLECTANCE_MULT_BAND_${band} | cut -d "=" -f 2 | tr -d " " )
-
-  echo ${gain}
-
-}
-
-function getOffset() {
-
-  local band=$1
-
-  offset=$( cat $DIR/*_MTL.txt | grep REFLECTANCE_ADD_BAND_${band} | cut -d "=" -f 2 | tr -d " " )
-
-  echo ${offset}
-
-}
-
-function DNtoReflectance() {
-
-  local band=$1
-  local base_name=$2
-
-  gain=$( getGain ${band} )
-  offset=$( getOffset ${band} )
-
-  [ ${band} -eq 4 ] && pan_band=1
-  [ ${band} -eq 3 ] && pan_band=2
-  [ ${band} -eq 2 ] && pan_band=3
-
-  otbcli_BandMath \
-    -progress false \
-    -il ${base_name}/pan-${base_name}.tif \
-    -exp "${gain} * im1b${pan_band} + ${offset}" \
-    -out ${base_name}/PAN_TOA_REFLECTANCE_B${band}.TIF
-
-}
-
 function mapBands() {
 
   local vrt=$1
@@ -126,13 +84,7 @@ function url_resolver() {
   local url=""
   local reference="$1"
   
-  #read identifier path < <( opensearch-client -m EOP  "${reference}" identifier,wrsLongitudeGrid | tr "," " " )
-  #[ -z "${path}" ] && path="$( echo ${identifier} | cut -c 4-6)"
-  #row="$( echo ${identifier} | cut -c 7-9)"
-
-  #url="http://storage.googleapis.com/earthengine-public/landsat/L8/${path}/${row}/${identifier}.tar.bz"
   url="$(opensearch-client -m EOP -p es=gateway "${reference}" enclosure )"
-  #[ -z "$( curl -s --head "${url}" | head -n 1 | grep "HTTP/1.[01] [23].." )" ] && return 1
 
   echo "${url}"
 
@@ -157,9 +109,6 @@ function metadata() {
 
 function main() {
 
-  # set the gdal addo levels
-  addo="2 4 8 16 32 64 128 256 512 1024 2048 4096 8192"
-
   # set OTB environment
   setOTBenv
 
@@ -167,15 +116,15 @@ function main() {
 
   cd ${TMPDIR}
 
-  num_steps=14
+  num_steps=7
 
   while read input
   do 
     ciop-log "INFO" "(1 of ${num_steps}) Retrieve Landsat 8 product from ${input}"
 
     # temporary path until eo-samples indes is ready
-    #read identifier startdate enddate < <( opensearch-client ${input} identifier,startdate,enddate | tr "," " " )
-    read identifier < <( opensearch-client ${input} identifier )
+    read identifier startdate enddate < <( opensearch-client ${input} identifier,startdate,enddate | tr "," " " )
+    #read identifier < <( opensearch-client ${input} identifier )
     online_resource="$( url_resolver ${input} )"
     [ -z "${online_resource}" ] && return ${ERR_NO_URL} 
 
@@ -207,40 +156,11 @@ function main() {
       -ram ${otb_ram} \
       -inp ${DIR}/*B8.TIF \
       -inxs ${DIR}/rgb.vrt \
-      -out ${DIR}/pan-${DIR}.tif uint16 || return ${ERR_OTB_BUNDLETOPERFECTSENSOR}
+      -out ${DIR}/${DIR}_PANSHARP.tif uint16 || return ${ERR_OTB_BUNDLETOPERFECTSENSOR}
 
     rm -f ${DIR}/rgb.vrt
 
-    ciop-log "INFO" "(5 of ${num_steps}) Conversion of DN to reflectance"
-
-    DNtoReflectance 4 ${DIR} || return ${ERR_DN2REF_4}
-    DNtoReflectance 3 ${DIR} || return ${ERR_DN2REF_3}
-    DNtoReflectance 2 ${DIR} || return ${ERR_DN2REF_2}
-
-    rm -f ${DIR}/pan-${DIR}.tif
-
-    ciop-log "INFO" "(6 of ${num_steps}) Create VRT with RGB pansharpened bands"
-
-    gdalbuildvrt \
-      -separate \
-      -q \
-      -srcnodata "0 0 0"\
-      -vrtnodata "0 0 0"\
-      ${DIR}/pan_rgb.vrt \
-      ${DIR}/PAN*B4.TIF ${DIR}/PAN*B3.TIF ${DIR}/PAN*B2.TIF || return ${ERR_GDAL_VRT2}
-
-    ciop-log "INFO" "(7 of ${num_steps}) Rescale to bitr"
-
-    gdal_translate \
-      -q \
-      -ot Byte \
-      -scale 0 1 0 255 \
-      -a_nodata "0 0 0" \
-      ${DIR}/pan_rgb.vrt ${DIR}/${DIR}_PANSHARP.tif || return ${ERR_GDAL_TRANSLATE}
-
-    rm -f ${DIR}/PAN*B?.TIF
-
-    rm -f ${DIR}/pan_rgb.vrt
+    ciop-log "INFO" "(5 of ${num_steps}) Produce result metadata"
 
     target_xml=${TMPDIR}/${DIR}/${DIR}_PANSHARP.tif.xml
     cp /application/pan-sharp/etc/eop-template.xml ${target_xml}
@@ -308,10 +228,10 @@ function main() {
       "${row}" \
       ${target_xml} 
 
-    ciop-log "INFO" "(13 of ${num_steps}) Publish pan-sharpened RGB image"
+    ciop-log "INFO" "(6 of ${num_steps}) Publish pan-sharpened RGB image"
     ciop-publish -m ${TMPDIR}/${DIR}/${DIR}_PANSHARP.tif || exit ${ERR_PUBLISH}
     
-    ciop-log "INFO" "(14 of ${num_steps}) Publish eop metadata"
+    ciop-log "INFO" "(7 of ${num_steps}) Publish eop metadata"
     ciop-publish -m ${target_xml} || exit ${ERR_PUBLISH}
   done
 
