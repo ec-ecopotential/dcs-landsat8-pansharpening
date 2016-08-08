@@ -36,13 +36,13 @@ Used in Cluster mode (a set of master and slave nodes), it supports the deployme
 
 **Installing OTB and other dependencies**
 
-This services requires OTB, ImageMagick and XML Starlet
+This services requires OTB, GDAL and XML Starlet
 
 To install these packages, run the simple steps below on the Developer Cloud Sandbox shell:
 
 ```bash
 sudo yum install -y OTB
-sudo yum install -y ImageMagick
+sudo yum install -y gdal-t2
 sudo yum install -y xmlstarlet
 ```
 
