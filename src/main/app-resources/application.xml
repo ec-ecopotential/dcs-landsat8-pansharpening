@@ -19,7 +19,7 @@
     <node id="pan-sharp">
       <job id="pan-sharp"/>
       <sources>
-  <source id="series" refid="cas:series" scope="runtime" title="Landsat 8 catalogue access point" abstract="Landsat 8 catalogue access point" maxOccurs="1">https://data2.terradue.com/eop/landsat8/dataset/description</source>
+  <source id="series" refid="cas:series" scope="runtime" title="Landsat 8 catalogue access point" abstract="Landsat 8 catalogue access point" maxOccurs="1">https://catalog.terradue.com/landsat8/description</source>
       </sources>
     </node>
   </workflow>
